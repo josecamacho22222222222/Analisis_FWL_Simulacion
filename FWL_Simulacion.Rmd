@@ -1,7 +1,7 @@
 ---
-title: "Geometría del MCO en ℝ³: Modelo Geométrico Puro"
-subtitle: "Presentación Didáctica: Álgebra Lineal sin Estimadores"
-author: "Análisis de Datos"
+title: "Geometría del MCO y Teorema FWL: Prueba de Simulación"
+subtitle: "Demostración empírica de la equivalencia entre MCO múltiple y proyecciones secuenciales"
+author: "Simulación basada en el Modelo de Mincer"
 date: "`r Sys.Date()`"
 output: 
   html_document:
@@ -9,99 +9,169 @@ output:
     toc: true
     toc_float: true
     code_folding: show
+editor_options: 
+  markdown: 
+    wrap: sentence
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, fig.align = "center")
 library(dplyr)
 library(plotly)
+library(kableExtra)
 ```
 
-# 📌 Paso 1: Carga y Unión de Bases de Datos
+# 📌 Paso 1: Simulación del Modelo de Mincer
 
-En este primer paso, cargamos las diferentes bases de datos de la Encuesta. Utilizamos la variable `DIRECTORIO` como clave para unir toda la información.
+Simulamos una población de $N=1000$ individuos que sigue la estructura del modelo de Mincer: el logaritmo del salario depende de la educación y la experiencia.
+Fijamos una semilla para garantizar que los resultados sean exactamente los mismos cada vez que se ejecute.
 
-```{r paso1-carga}
-ruta <- "C:/Users/josec/OneDrive/Desktop/Ponencias/Matematicas/Bases de datos/"
+```{r paso1-simulacion}
+set.seed(42) # Semilla fija para reproducibilidad total
+N <- 1000
 
-leer_bd <- function(archivo) {
-  read.csv2(paste0(ruta, archivo)) %>%
-    mutate(DIRECTORIO = as.character(DIRECTORIO))
-}
+# 1. Variables explicativas (con cierta correlación realista)
+educacion <- rnorm(N, mean = 12, sd = 3)
+experiencia <- rnorm(N, mean = 20, sd = 8) + 0.5 * educacion 
 
-bd1 <- leer_bd("DBF-ENCV-Características_composición_hogar-2024/Características y composición del hogar.CSV")
-bd2 <- leer_bd("DBF-ENCV-Condiciones_vida_hogar_tenencia_bienes/Condiciones de vida del hogar y tenencia de bienes.CSV")
-bd3 <- leer_bd("DBF-ENCV-Salud/Salud.CSV")
-bd4 <- leer_bd("DBF-ENCV-Hogar/Datos de la vivienda.CSV")
-bd5 <- leer_bd("DBF-ENCV-Servicios_hogar-2024/Servicios del hogar.CSV")
+# 2. Término de error
+u <- rnorm(N, mean = 0, sd = 0.25)
 
-bd6 <- bd1 %>%
-  left_join(bd2, by = "DIRECTORIO") %>%
-  left_join(bd3, by = "DIRECTORIO") %>%
-  left_join(bd4, by = "DIRECTORIO") %>%
-  left_join(bd5, by = "DIRECTORIO")
+# 3. Variable dependiente: Modelo de Mincer verdadero
+# ln(Salario) = 0.5 + 0.08*Educacion + 0.04*Experiencia + u
+ln_salario <- 0.5 + 0.08 * educacion + 0.04 * experiencia + u
+
+df_mincer <- data.frame(ln_salario, educacion, experiencia)
+
+head(df_mincer) %>% kable(caption = "Primeras 6 observaciones de la base simulada")
 ```
 
-------------------------------------------------------------------------
+# 📌 Paso 2: La Prueba Algebraica (MCO vs. FWL)
 
-# 📌 Paso 2: Selección y Limpieza de Datos
+Aquí ponemos a prueba el núcleo del paper.
+Estimaremos el efecto de la educación ($\beta_1$) de dos formas: 1.
+MCO Tradicional: Regresión múltiple completa.
+2.
+Teorema FWL (2 pasos): - Paso A: "Purificar" (residualizar) el salario y la educación, eliminando el efecto de la experiencia.
+- Paso B: Regresar el salario purificado sobre la educación purificada.
 
-Filtramos los datos para trabajar con el Valle del Cauca y aplicamos transformación logarítmica.
+```{r paso2-prueba-algebraica}
+# ============================================
+# CAMINO 1: MCO Tradicional (Regresión Múltiple)
+# ============================================
+mod_mco <- lm(ln_salario ~ educacion + experiencia, data = df_mincer)
+beta1_mco <- coef(mod_mco)["educacion"]
+beta2_mco <- coef(mod_mco)["experiencia"]
 
-```{r paso2-limpieza}
-bd_valle <- bd6 %>%
-  select(DIRECTORIO, P3176, P1_DEPARTAMENTO, PERCAPITA, CANT_PERSONAS_HOGAR) %>%
-  distinct(DIRECTORIO, .keep_all = TRUE) %>%
-  filter(P1_DEPARTAMENTO == 76) %>% 
-  mutate(
-    y_raw  = as.numeric(P3176),
-    v1_raw = as.numeric(PERCAPITA),
-    v2_raw = as.numeric(CANT_PERSONAS_HOGAR)
-  ) %>%
-  filter(y_raw > 0, v1_raw > 0, !is.na(v2_raw)) %>%
-  mutate(y = log(y_raw), v1 = log(v1_raw), v2 = v2_raw) %>%
-  select(DIRECTORIO, y, v1, v2)
+# ============================================
+# CAMINO 2A: FWL para β1 (Educación)
+# ============================================
+# Purificar Y y X1 respecto a X2 (Experiencia)
+M1_y <- resid(lm(ln_salario ~ experiencia, data = df_mincer))
+M1_x1 <- resid(lm(educacion ~ experiencia, data = df_mincer))
+beta1_fwl <- coef(lm(M1_y ~ M1_x1 - 1))["M1_x1"]
+
+# ============================================
+# CAMINO 2B: FWL para β2 (Experiencia)
+# ============================================
+# Purificar Y y X2 respecto a X1 (Educación)
+M2_y <- resid(lm(ln_salario ~ educacion, data = df_mincer))
+M2_x2 <- resid(lm(experiencia ~ educacion, data = df_mincer))
+beta2_fwl <- coef(lm(M2_y ~ M2_x2 - 1))["M2_x2"]
+
+# ============================================
+# VERIFICACIÓN DE IGUALDAD
+# ============================================
+diff_beta1 <- abs(beta1_mco - beta1_fwl)
+diff_beta2 <- abs(beta2_mco - beta2_fwl)
+
+cat("── Verificación del Teorema FWL ──\n")
+cat("β1 (Educación):\n")
+cat("  MCO:", beta1_mco, "\n")
+cat("  FWL:", beta1_fwl, "\n")
+cat("  Diferencia:", diff_beta1, "\n")
+cat("  ¿Iguales?", ifelse(diff_beta1 < 1e-10, "✅ SÍ", "❌ NO"), "\n\n")
+
+cat("β2 (Experiencia):\n")
+cat("  MCO:", beta2_mco, "\n")
+cat("  FWL:", beta2_fwl, "\n")
+cat("  Diferencia:", diff_beta2, "\n")
+cat("  ¿Iguales?", ifelse(diff_beta2 < 1e-10, "✅ SÍ", "❌ NO"), "\n\n")
+
+# ============================================
+# TABLA COMPARATIVA FINAL
+# ============================================
+resultados <- data.frame(
+  Parámetro = c("β₁ (Educación)", "β₁ (Educación)", "β₂ (Experiencia)", "β₂ (Experiencia)"),
+  Método = c("MCO Múltiple", "FWL (Purificación)", "MCO Múltiple", "FWL (Purificación)"),
+  Estimación = c(
+    sprintf("%.8f", beta1_mco),
+    sprintf("%.8f", beta1_fwl),
+    sprintf("%.8f", beta2_mco),
+    sprintf("%.8f", beta2_fwl)
+  ),
+  Verificación = c(
+    "Base",
+    ifelse(diff_beta1 < 1e-10, "✅ IDÉNTICO", "❌ DIFERENTE"),
+    "Base",
+    ifelse(diff_beta2 < 1e-10, "✅ IDÉNTICO", "❌ DIFERENTE")
+  )
+)
+
+resultados %>% 
+  kable(caption = "Demostración completa del Teorema FWL: Ambos métodos producen los mismos parámetros", 
+        align = "c", escape = FALSE) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
 ```
 
-------------------------------------------------------------------------
+# 📌 Paso 3: Muestra Didáctica para Geometría en ℝ³
 
-# 📌 Paso 3: Muestra Didáctica y Álgebra Lineal Pura
+Para visualizar la geometría, necesitamos vectores en $\mathbb{R}^3$.
+Extraemos una muestra de **solo** $n=3$ individuos de nuestra simulación.
+Usamos un bucle para garantizar que los 3 vectores formen una geometría no degenerada (ángulos adecuados, residuos proporcionales).
 
-Extraemos una muestra de 3 observaciones y calculamos proyecciones ortogonales.
+**Importante:** Restamos la media de las variables para trabajar con vectores que nacen del origen $(0,0,0)$.
+Esto elimina el intercepto y nos deja con la variación pura.
 
-```{r paso3-muestra}
+```{r paso3-muestra-3d}
 set.seed(123) 
 encontrado <- FALSE
 intentos <- 0
 
 while(!encontrado && intentos < 2000) {
   intentos <- intentos + 1
-  bd9_temp <- bd_valle %>% sample_n(3)
+  idx_temp <- sample(1:N, 3)
+  df_temp <- df_mincer[idx_temp, ]
   
-  y_t  <- bd9_temp$y  - mean(bd_valle$y)
-  v1_t <- bd9_temp$v1 - mean(bd_valle$v1)
-  v2_t <- bd9_temp$v2 - mean(bd_valle$v2)
+  # Desmeanar
+  y_t  <- df_temp$ln_salario - mean(df_temp$ln_salario)
+  x1_t <- df_temp$educacion - mean(df_temp$educacion)
+  x2_t <- df_temp$experiencia - mean(df_temp$experiencia)
   
-  if(sd(y_t) < 0.2 || sd(v1_t) < 0.2 || sd(v2_t) < 0.2) next
-  cos_theta <- sum(v1_t * v2_t) / (sqrt(sum(v1_t^2)) * sqrt(sum(v2_t^2)))
-  if(abs(cos_theta) > 0.65) next 
+  # Criterios de calidad geométrica
+  if(sd(y_t) < 0.2 || sd(x1_t) < 0.2 || sd(x2_t) < 0.2) next
   
-  beta_1_geom_temp <- sum(y_t * v1_t) / sum(v1_t^2)
-  yhat_1_temp      <- beta_1_geom_temp * v1_t
-  e1_temp          <- y_t - yhat_1_temp
+  cos_theta <- sum(x1_t * x2_t) / (sqrt(sum(x1_t^2)) * sqrt(sum(x2_t^2)))
+  if(abs(cos_theta) > 0.65) next  # Evitar multicolinealidad extrema
   
-  beta_2_geom_temp <- sum(y_t * v2_t) / sum(v2_t^2)
-  yhat_2_temp      <- beta_2_geom_temp * v2_t
-  e2_temp          <- y_t - yhat_2_temp
+  # Proyecciones simples
+  beta_1_geom_temp <- sum(y_t * x1_t) / sum(x1_t^2)
+  yhat_1_temp <- beta_1_geom_temp * x1_t
+  e1_temp <- y_t - yhat_1_temp
   
+  beta_2_geom_temp <- sum(y_t * x2_t) / sum(x2_t^2)
+  yhat_2_temp <- beta_2_geom_temp * x2_t
+  e2_temp <- y_t - yhat_2_temp
+  
+  # Ratios de residuos
   norm_y <- sqrt(sum(y_t^2))
   ratio1 <- sqrt(sum(e1_temp^2)) / norm_y
   ratio2 <- sqrt(sum(e2_temp^2)) / norm_y
   
   if(ratio1 < 0.2 || ratio1 > 0.9 || ratio2 < 0.2 || ratio2 > 0.9) next
   
-  bd9 <- bd9_temp
-  y_c <- y_t; v1_c <- v1_t; v2_c <- v2_t
+  # Guardar muestra válida
+  y_c <- y_t; x1_c <- x1_t; x2_c <- x2_t
   yhat_1 <- yhat_1_temp; e1 <- e1_temp
   yhat_2 <- yhat_2_temp; e2 <- e2_temp
   
@@ -109,138 +179,198 @@ while(!encontrado && intentos < 2000) {
 }
 
 cat("\n── Verificación Geométrica ──\n")
-cat("Condición v₁ᵀe₁ =", round(sum(v1_c * e1), 10), "(≈ 0)\n")
-cat("Condición v₂ᵀe₂ =", round(sum(v2_c * e2), 10), "(≈ 0)\n")
+cat("Condición x₁ᵀe₁ =", round(sum(x1_c * e1), 10), "(≈ 0)\n")
+cat("Condición x₂ᵀe₂ =", round(sum(x2_c * e2), 10), "(≈ 0)\n")
 ```
-
-------------------------------------------------------------------------
 
 # 📌 Paso 4: Preparación para Visualización 3D
 
-```{r paso4-preparacion}
-zoom <- 4
-max_v <- max(abs(c(v1_c, v2_c, y_c)))
+Escalamos los vectores para que quepan bien en el gráfico 3D y calculamos las rectas que representan los subespacios generados por cada vector.
 
-V1s <- (v1_c / max_v) * zoom
-V2s <- (v2_c / max_v) * zoom
+```{r paso4-preparacion-3d}
+zoom <- 5
+max_v <- max(abs(c(x1_c, x2_c, y_c)))
+
+X1s <- (x1_c / max_v) * zoom
+X2s <- (x2_c / max_v) * zoom
 Ys  <- (y_c  / max_v) * zoom
 P1s <- (yhat_1 / max_v) * zoom
 P2s <- (yhat_2 / max_v) * zoom
 
+# Rectas que representan span{x₁} y span{x₂}
 lim <- 2.5
-recta_v1 <- data.frame(x = c(-lim * V1s[1], lim * V1s[1]), y = c(-lim * V1s[2], lim * V1s[2]), z = c(-lim * V1s[3], lim * V1s[3]))
-recta_v2 <- data.frame(x = c(-lim * V2s[1], lim * V2s[1]), y = c(-lim * V2s[2], lim * V2s[2]), z = c(-lim * V2s[3], lim * V2s[3]))
-
-d <- 0.2
-res1_dir <- (Ys - P1s) / sqrt(sum((Ys - P1s)^2))
-v1_dir   <- V1s / sqrt(sum(V1s^2))
-ra1_p1 <- P1s + d * v1_dir; ra1_p2 <- ra1_p1 + d * res1_dir; ra1_p3 <- P1s + d * res1_dir
-
-res2_dir <- (Ys - P2s) / sqrt(sum((Ys - P2s)^2))
-v2_dir   <- V2s / sqrt(sum(V2s^2))
-ra2_p1 <- P2s + d * v2_dir; ra2_p2 <- ra2_p1 + d * res2_dir; ra2_p3 <- P2s + d * res2_dir
+recta_x1 <- data.frame(
+  x = c(-lim * X1s[1], lim * X1s[1]), 
+  y = c(-lim * X1s[2], lim * X1s[2]), 
+  z = c(-lim * X1s[3], lim * X1s[3])
+)
+recta_x2 <- data.frame(
+  x = c(-lim * X2s[1], lim * X2s[1]), 
+  y = c(-lim * X2s[2], lim * X2s[2]), 
+  z = c(-lim * X2s[3], lim * X2s[3])
+)
 ```
 
-------------------------------------------------------------------------
+# 📌 Paso 5: Función Auxiliar para Flechas 3D
 
-# 📌 Paso 5: Función de Renderizado
-
-```{r paso5-funcion}
-add_arrow3d <- function(fig, from, to, color, name, lwd = 7, cs = 0.2, dash = "solid") {
-  dv <- to - from; dn <- dv / sqrt(sum(dv^2))
+```{r paso5-funcion-flecha}
+add_arrow3d <- function(fig, from, to, color, name, lwd = 6, cs = 0.15, dash = "solid") {
+  dv <- to - from
+  dn <- dv / sqrt(sum(dv^2)) # Vector unitario de dirección
+  
   fig %>%
-    add_trace(type = "scatter3d", mode = "lines", x = c(from[1], to[1] - dn[1]*0.1), y = c(from[2], to[2] - dn[2]*0.1), z = c(from[3], to[3] - dn[3]*0.1),
-              line = list(color = color, width = lwd, dash = dash), name = name, hovertemplate = paste0("<b>", name, "</b><extra></extra>")) %>%
-    add_trace(type = "cone", x = to[1], y = to[2], z = to[3], u = dn[1], v = dn[2], w = dn[3],
-              colorscale = list(list(0, color), list(1, color)), showscale = FALSE, sizemode = "absolute", sizeref = cs, anchor = "tip", hoverinfo = "skip")
+    # Línea de la flecha
+    add_trace(type = "scatter3d", mode = "lines", 
+              x = c(from[1], to[1] - dn[1]*0.1), 
+              y = c(from[2], to[2] - dn[2]*0.1), 
+              z = c(from[3], to[3] - dn[3]*0.1),
+              line = list(color = color, width = lwd, dash = dash), 
+              name = name, hoverinfo = "text", text = name) %>%
+    # Punta de la flecha (cono)
+    add_trace(type = "cone", x = to[1], y = to[2], z = to[3], 
+              u = dn[1], v = dn[2], w = dn[3],
+              colorscale = list(list(0, color), list(1, color)), 
+              showscale = FALSE, sizemode = "absolute", sizeref = cs, 
+              anchor = "tip", hoverinfo = "skip")
 }
 ```
 
-------------------------------------------------------------------------
+# 📌 Paso 6: Gráfico 1 - Doble Proyección 1D en ℝ³
 
-# 📌 Paso 6: Gráfico de Doble Proyección
+Este gráfico muestra las proyecciones ortogonales simples de $\mathbf{y}$ sobre cada vector explicativo por separado.
+Observa cómo cada residuo ($e_1$ y $e_2$) es perpendicular a su respectivo vector de proyección.
 
-```{r paso6-grafico1, fig.height=8, fig.width=10}
-origen <- c(0,0,0)
+```{r paso6-grafico-doble-proyeccion, fig.height=8, fig.width=10}
+origen <- c(0, 0, 0)
 
-fig <- plot_ly() %>%
-  add_trace(type = "scatter3d", mode = "lines", x = recta_v1$x, y = recta_v1$y, z = recta_v1$z, line = list(color = "#1e8449", width = 2), name = "span{v₁}", hoverinfo = "skip") %>%
-  add_trace(type = "scatter3d", mode = "lines", x = recta_v2$x, y = recta_v2$y, z = recta_v2$z, line = list(color = "#6c3483", width = 2), name = "span{v₂}", hoverinfo = "skip") %>%
-  add_arrow3d(origen, V1s, "#2ecc71", "v₁") %>%
-  add_arrow3d(origen, V2s, "#9b59b6", "v₂") %>%
-  add_arrow3d(origen, Ys, "#e74c3c", "y") %>%
-  add_arrow3d(origen, P1s, "#f39c12", "Proy(y) en v₁") %>%
-  add_arrow3d(origen, P2s, "#00bcd4", "Proy(y) en v₂") %>%
-  add_trace(type = "scatter3d", mode = "lines", x = c(P1s[1], Ys[1]), y = c(P1s[2], Ys[2]), z = c(P1s[3], Ys[3]), line = list(color = "#f39c12", width = 3, dash = "dash"), name = "e₁") %>%
-  add_trace(type = "scatter3d", mode = "lines", x = c(P2s[1], Ys[1]), y = c(P2s[2], Ys[2]), z = c(P2s[3], Ys[3]), line = list(color = "#00bcd4", width = 3, dash = "dash"), name = "e₂") %>%
-  layout(paper_bgcolor = "#0d1117", scene = list(aspectmode = "cube"), title = "Doble Proyección 1D en ℝ³")
+fig1 <- plot_ly() %>%
+  # Rectas de los subespacios
+  add_trace(type = "scatter3d", mode = "lines", 
+            x = recta_x1$x, y = recta_x1$y, z = recta_x1$z, 
+            line = list(color = "#1e8449", width = 2), 
+            name = "span{x₁}", hoverinfo = "skip") %>%
+  add_trace(type = "scatter3d", mode = "lines", 
+            x = recta_x2$x, y = recta_x2$y, z = recta_x2$z, 
+            line = list(color = "#6c3483", width = 2), 
+            name = "span{x₂}", hoverinfo = "skip") %>%
+  
+  # Vectores originales
+  add_arrow3d(origen, X1s, "#2ecc71", "x₁: Educación") %>%
+  add_arrow3d(origen, X2s, "#9b59b6", "x₂: Experiencia") %>%
+  add_arrow3d(origen, Ys, "#e74c3c", "y: Log-Salario") %>%
+  
+  # Proyecciones
+  add_arrow3d(origen, P1s, "#f39c12", "Proy(y) en x₁") %>%
+  add_arrow3d(origen, P2s, "#00bcd4", "Proy(y) en x₂") %>%
+  
+  # Residuos (líneas punteadas)
+  add_trace(type = "scatter3d", mode = "lines", 
+            x = c(P1s[1], Ys[1]), y = c(P1s[2], Ys[2]), z = c(P1s[3], Ys[3]), 
+            line = list(color = "#f39c12", width = 3, dash = "dash"), 
+            name = "e₁") %>%
+  add_trace(type = "scatter3d", mode = "lines", 
+            x = c(P2s[1], Ys[1]), y = c(P2s[2], Ys[2]), z = c(P2s[3], Ys[3]), 
+            line = list(color = "#00bcd4", width = 3, dash = "dash"), 
+            name = "e₂") %>%
+  
+  layout(
+    paper_bgcolor = "#0d1117",
+    plot_bgcolor = "#0d1117",
+    scene = list(aspectmode = "cube"),
+    title = list(text = "Doble Proyección 1D en ℝ³", font = list(color = "white"))
+  )
 
-fig
+fig1
 ```
 
-------------------------------------------------------------------------
+# 📌 Paso 7: Gráfico 2 - Teorema Frisch-Waugh-Lovell en ℝ³
 
-# 📌 Paso 7: Teorema FWL
+Este gráfico ilustra el proceso de "purificación" del teorema FWL.
+Los vectores naranjas y cyan muestran las variables una vez eliminada la influencia del control.
+El vector verde grueso es la proyección final (el estimador $\hat{\beta}_1$).
 
-```{r paso7-fwl, fig.height=8, fig.width=10}
-beta_y_v1  <- sum(y_c * v1_c) / sum(v1_c^2)
-beta_v2_v1 <- sum(v2_c * v1_c) / sum(v1_c^2)
-M1y  <- y_c  - beta_y_v1  * v1_c   
-M1v2 <- v2_c - beta_v2_v1 * v1_c   
-beta_fwl_2 <- sum(M1y * M1v2) / sum(M1v2^2)
-P_FWL_2    <- beta_fwl_2 * M1v2
+```{r paso7-grafico-fwl, fig.height=8, fig.width=10}
+# --- Camino FWL para β₁ (Aislando x₁) ---
+beta_y_x2  <- sum(y_c * x2_c) / sum(x2_c^2)
+beta_x1_x2 <- sum(x1_c * x2_c) / sum(x2_c^2)
+M1y  <- y_c  - beta_y_x2  * x2_c   
+M1x1 <- x1_c - beta_x1_x2 * x2_c   
+beta_fwl_1 <- sum(M1y * M1x1) / sum(M1x1^2)
+P_FWL_1    <- beta_fwl_1 * M1x1
 
-beta_y_v2  <- sum(y_c * v2_c) / sum(v2_c^2)
-beta_v1_v2 <- sum(v1_c * v2_c) / sum(v2_c^2)
-M2y  <- y_c  - beta_y_v2  * v2_c   
-M2v1 <- v1_c - beta_v1_v2 * v2_c   
-beta_fwl_1 <- sum(M2y * M2v1) / sum(M2v1^2)
-P_FWL_1    <- beta_fwl_1 * M2v1
+# Escalar vectores FWL
+M1y_s  <- (M1y / max_v) * zoom
+M1x1_s <- (M1x1 / max_v) * zoom
+P_FWL_1s <- (P_FWL_1 / max_v) * zoom
 
-M1ys <- (M1y / max_v) * zoom; M1v2s <- (M1v2 / max_v) * zoom; P_FWLs_2 <- (P_FWL_2 / max_v) * zoom
-M2ys <- (M2y / max_v) * zoom; M2v1s <- (M2v1 / max_v) * zoom; P_FWLs_1 <- (P_FWL_1 / max_v) * zoom
+fig2 <- plot_ly() %>%
+  # Vectores originales (atenuados)
+  add_arrow3d(origen, X1s, "#7f8c8d", "x₁ Original", lwd = 3) %>%
+  add_arrow3d(origen, X2s, "#95a5a6", "x₂ Original (Control)", lwd = 3) %>%
+  add_arrow3d(origen, Ys, "#e74c3c", "y Original", lwd = 4) %>%
+  
+  # Vectores Purificados (FWL)
+  add_arrow3d(origen, M1y_s, "#f39c12", "M₁y: Salario Purificado", lwd = 6) %>%
+  add_arrow3d(origen, M1x1_s, "#00bcd4", "M₁x₁: Educación Purificada", lwd = 6) %>%
+  
+  # Proyección Final (El estimador)
+  add_arrow3d(origen, P_FWL_1s, "#2ecc71", "β₁_FWL * M₁x₁ (Estimador)", lwd = 8) %>%
+  
+  layout(
+    paper_bgcolor = "#0d1117",
+    plot_bgcolor = "#0d1117",
+    scene = list(aspectmode = "cube"),
+    title = list(text = "Teorema Frisch-Waugh-Lovell en ℝ³", font = list(color = "white"))
+  )
 
-fig_fwl <- plot_ly() %>%
-  add_arrow3d(origen, V1s, "#95a5a6", "v₁ Original", lwd=4) %>%
-  add_arrow3d(origen, V2s, "#7f8c8d", "v₂ Original", lwd=4) %>%
-  add_arrow3d(origen, Ys, "#e74c3c", "y Original", lwd=5) %>%
-  add_arrow3d(origen, M1ys, "#f39c12", "M₁y", lwd=6) %>%
-  add_arrow3d(origen, M1v2s, "#00bcd4", "M₁v₂", lwd=6) %>%
-  add_arrow3d(origen, P_FWLs_2, "#2ecc71", "β₂ FWL", lwd=8) %>%
-  add_arrow3d(origen, M2ys, "#e84393", "M₂y", lwd=6) %>%
-  add_arrow3d(origen, M2v1s, "#9b59b6", "M₂v₁", lwd=6) %>%
-  add_arrow3d(origen, P_FWLs_1, "#f1c40f", "β₁ FWL", lwd=8) %>%
-  layout(paper_bgcolor = "#0d1117", scene = list(aspectmode = "cube"), title = "Teorema Frisch-Waugh-Lovell")
-
-fig_fwl
+fig2
 ```
 
-------------------------------------------------------------------------
+# 📌 Paso 8: Gráfico 3 - Regresión Múltiple (Proyección sobre el Plano)
 
-# 📌 Paso 8: Regresión Múltiple
+Finalmente, este gráfico muestra la regresión múltiple completa: la proyección ortogonal de $\mathbf{y}$ sobre el plano generado por $\mathbf{x}_1$ y $\mathbf{x}_2$.
+El vector $\hat{\mathbf{y}}$ es la suma de las componentes $\beta_1\mathbf{x}_1$ y $\beta_2\mathbf{x}_2$.
 
-```{r paso8-multiple, fig.height=8, fig.width=10}
-X_mat <- cbind(v1_c, v2_c)
+```{r paso8-grafico-multiple, fig.height=8, fig.width=10}
+# Calcular MCO usando álgebra lineal pura
+X_mat <- cbind(x1_c, x2_c)
 Y_vec <- y_c
 betas_mco <- solve(t(X_mat) %*% X_mat) %*% t(X_mat) %*% Y_vec
-b1_mco <- betas_mco[1]; b2_mco <- betas_mco[2]
+b1_mco <- betas_mco[1]
+b2_mco <- betas_mco[2]
 
-yhat_mco <- b1_mco * v1_c + b2_mco * v2_c
-comp_v1  <- b1_mco * v1_c; comp_v2  <- b2_mco * v2_c
+yhat_mco <- b1_mco * x1_c + b2_mco * x2_c
+comp_x1  <- b1_mco * x1_c
+comp_x2  <- b2_mco * x2_c
 
+# Escalar vectores
 Yhat_s <- (yhat_mco / max_v) * zoom
-C1_s   <- (comp_v1 / max_v) * zoom; C2_s   <- (comp_v2 / max_v) * zoom
+C1_s   <- (comp_x1 / max_v) * zoom
+C2_s   <- (comp_x2 / max_v) * zoom
 
-fig_mult <- plot_ly() %>%
-  add_arrow3d(origen, V1s, "#27ae60", "v₁", lwd=4) %>%
-  add_arrow3d(origen, V2s, "#8e44ad", "v₂", lwd=4) %>%
-  add_arrow3d(origen, Ys, "#e74c3c", "y", lwd=6) %>%
-  add_arrow3d(origen, C1_s, "#2ecc71", "β₁v₁", lwd=7) %>%
-  add_arrow3d(origen, C2_s, "#9b59b6", "β₂v₂", lwd=7) %>%
-  add_arrow3d(origen, Yhat_s, "#f1c40f", "ŷ", lwd=8) %>%
-  layout(paper_bgcolor = "#0d1117", scene = list(aspectmode = "cube"), title = "Regresión Múltiple - Proyección sobre el Plano")
+fig3 <- plot_ly() %>%
+  # Vectores base
+  add_arrow3d(origen, X1s, "#27ae60", "x₁", lwd = 4) %>%
+  add_arrow3d(origen, X2s, "#8e44ad", "x₂", lwd = 4) %>%
+  add_arrow3d(origen, Ys, "#e74c3c", "y", lwd = 6) %>%
+  
+  # Componentes de la proyección
+  add_arrow3d(origen, C1_s, "#2ecc71", "β₁x₁", lwd = 7) %>%
+  add_arrow3d(origen, C2_s, "#9b59b6", "β₂x₂", lwd = 7) %>%
+  
+  # Proyección completa
+  add_arrow3d(origen, Yhat_s, "#f1c40f", "ŷ (Proyección)", lwd = 8) %>%
+  
+  layout(
+    paper_bgcolor = "#0d1117",
+    plot_bgcolor = "#0d1117",
+    scene = list(aspectmode = "cube"),
+    title = list(text = "Regresión Múltiple - Proyección sobre el Plano", font = list(color = "white"))
+  )
 
-fig_mult
+fig3
 
-cat("\nβ₁ =", round(b1_mco, 4), "\nβ₂ =", round(b2_mco, 4), "\n")
+cat("\n── Parámetros MCO Tradicional ──\n")
+cat("β₁ =", round(b1_mco, 6), "\n")
+cat("β₂ =", round(b2_mco, 6), "\n")
 ```
